@@ -1,40 +1,71 @@
 use std::{
-    fs::File,
-    io::{self, Read},
-    os::unix::io::FromRawFd,
+    fs::{self},
+    io::{self, Read, Write},
+    os::unix::net::{UnixListener, UnixStream},
+    path::PathBuf,
 };
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut f = unsafe { File::from_raw_fd(3) };
-    let mut input = String::new();
-    f.read_to_string(&mut input)?;
+type Res<A> = Result<A, Box<dyn std::error::Error>>;
 
-    println!("I read: {}", input);
+const SOCKET_PATH: &str = "/tmp/ej-socket";
+
+fn do_client() -> Res<()> {
+    let socket = PathBuf::from(SOCKET_PATH);
+
+    let mut stream = UnixStream::connect(&socket)?;
+
+    let mut pipe_buffer = Vec::with_capacity(1024);
+    io::stdin().read_to_end(&mut pipe_buffer)?;
+
+    stream.write(&pipe_buffer).map(|_| ()).map_err(From::from)
+}
+
+fn do_server() -> Res<()> {
+    let socket = PathBuf::from(SOCKET_PATH);
+
+    // Delete old socket if necessary
+    if socket.exists() {
+        println!("Deleting old socket");
+        fs::remove_file(&socket)?;
+    }
+
+    let listener = UnixListener::bind(&socket)?;
+
+    println!("Server started, waiting for clients");
+
+    let mut buffer = String::with_capacity(1024);
+
+    // Iterate over clients, blocks if no client available
+    for client in listener.incoming() {
+        client?.read_to_string(&mut buffer)?;
+        println!("Client said: {buffer}");
+
+        buffer.clear();
+    }
 
     Ok(())
 }
 
+fn main() -> Res<()> {
+    let mut args = std::env::args();
 
-//fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //let mut pipe_buffer = Vec::with_capacity(1024);
-    //io::stdin().read_to_end(&mut pipe_buffer)?;
-//
-    //println!("{:?}", String::from_utf8(pipe_buffer));
-//
-    //let mut keys_buffer = String::with_capacity(256);
-//
-    //while let Ok(count) = io::stdin().read_line(&mut keys_buffer) {
-        //if count == 0 { continue }
-        //println!("\rkeys_buffer: {keys_buffer}");
-        //if keys_buffer.starts_with("q") {
-            //println!("got quit command");
-            //return Ok(())
-        //}
-//
-        //keys_buffer.clear();
-    //}
-//
-    //println!("fell out of loop");
-//
-    //Ok(())
-//}
+    args.next(); //exe name
+
+    let mut is_client = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--client" => {
+                is_client = true;
+            }
+            _ => {
+                return Err(format!("Unrecognized arg: {arg}").into());
+            }
+        }
+    }
+
+    if is_client {
+        do_client()
+    } else {
+        do_server()
+    }
+}
