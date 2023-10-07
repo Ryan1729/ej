@@ -3,15 +3,45 @@ use std::{
     io::{self, ErrorKind, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
+    process::{ExitCode, Termination},
     sync::mpsc::{channel, Receiver, TryRecvError},
     thread,
 };
 
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
 
-const SOCKET_PATH: &str = "ej-socket";
+const SOCKET_PATH: &str = "/tmp/ej-socket";
 
-fn do_client() -> Res<()> {
+#[derive(Debug)]
+enum ClientError {
+    Io(io::Error),
+}
+
+impl core::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use ClientError::*;
+        match self {
+            Io(_) => write!(f, "I/O error"),
+        }
+    }
+}
+
+impl std::error::Error for ClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use ClientError::*;
+        match self {
+            Io(e) => Some(e),
+        }
+    }
+}
+
+impl From<io::Error> for ClientError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+fn do_client() -> Result<(), ClientError> {
     let socket = PathBuf::from(SOCKET_PATH);
 
     let mut stream = UnixStream::connect(&socket)?;
@@ -22,7 +52,41 @@ fn do_client() -> Res<()> {
     stream.write(&pipe_buffer).map(|_| ()).map_err(From::from)
 }
 
-fn do_server() -> Res<()> {
+#[derive(Debug)]
+enum ServerError {
+    Io(io::Error),
+    TryRecv(TryRecvError)
+}
+
+impl core::fmt::Display for ServerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use ServerError::*;
+        match self {
+            Io(_) => write!(f, "I/O error"),
+            TryRecv(_) => write!(f, "TryRecv error"),
+        }
+    }
+}
+
+impl std::error::Error for ServerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use ServerError::*;
+        match self {
+            Io(e) => Some(e),
+            TryRecv(e) => Some(e),
+        }
+    }
+}
+
+impl From<io::Error> for ServerError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+fn do_server() -> Result<(), ServerError> {
+    use ServerError::*;
+
     let socket = PathBuf::from(SOCKET_PATH);
 
     // Delete old socket if necessary
@@ -121,7 +185,7 @@ fn do_server() -> Res<()> {
             },
             Ok(key) => println!("Received: {}", key),
             Err(TryRecvError::Empty) => {},
-            Err(e) => Err(e)?,
+            Err(e) => Err(TryRecv(e))?,
         }
 
         // TODO accept input and display UI
@@ -138,7 +202,42 @@ fn do_server() -> Res<()> {
     Ok(())
 }
 
-fn main() -> Res<()> {
+struct Terminator(Res<()>);
+
+impl Termination for Terminator {
+    fn report(self) -> ExitCode {
+        match self.0 {
+            Ok(val) => ExitCode::SUCCESS,
+            Err(error) => {
+                use std::fmt::Write;
+                let mut buffer = String::with_capacity(256);
+
+                let mut indent = 0;
+                let mut err: Option<&dyn std::error::Error> = Some(&*error);
+                while let Some(e) = err {
+                    for _ in 0..indent {
+                        buffer.push(' ');
+                    }
+                    let _ = write!(buffer, "{e}\n");
+
+                    err = e.source();
+
+                    indent += 4;
+                }
+
+                eprintln!("{buffer}");
+
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+fn main() -> Terminator {
+    Terminator(res_main())
+}
+
+fn res_main() -> Res<()> {
     let mut args = std::env::args();
 
     args.next(); //exe name
@@ -156,8 +255,8 @@ fn main() -> Res<()> {
     }
 
     if is_client {
-        do_client()
+        do_client().map_err(From::from)
     } else {
-        do_server()
+        do_server().map_err(From::from)
     }
 }
