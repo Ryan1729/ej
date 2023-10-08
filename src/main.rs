@@ -8,6 +8,50 @@ use std::{
     thread,
 };
 
+mod jump_points {
+    use super::*;
+    use tinyjson::JsonValue;
+
+    #[derive(Debug)]
+    pub struct JumpPoint {
+        pub path: PathBuf,
+    }
+
+    pub fn parse(jump_points: &mut Vec<JumpPoint>, to_parse: &str) {
+        use std::fmt::Write;
+        use JsonValue::*;
+
+        for line in to_parse.lines() {
+            match line.parse::<JsonValue>() {
+                Ok(Object(object)) => {
+                    let Some(Object(message)) = object.get("message") else { continue };
+                    let Some(Array(children)) = message.get("children") else { continue };
+
+                    for child_value in children {
+                        let Object(child) = child_value else { continue };
+                        let Some(Array(spans)) = child.get("spans") else { continue };
+
+                        for span_value in spans {
+                            let Object(span) = span_value else { continue };
+
+                            let Some(String(ref path)) = span.get("file_name") else { continue };
+                            let Some(Number(line_number)) = span.get("line_start") else { continue };
+
+                            let mut path = path.clone();
+                            let _ = write!(path, ":{line_number}");
+                            jump_points.push(JumpPoint {
+                                path: PathBuf::from(path),
+                            });
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+}
+use jump_points::JumpPoint;
+
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
 
 const SOCKET_PATH: &str = "/tmp/ej-socket";
@@ -137,17 +181,6 @@ fn do_server() -> Result<(), ServerError> {
     let mut jump_points = Vec::with_capacity(16);
     let mut index = 0;
 
-    struct JumpPoint {
-        path: PathBuf,
-    }
-
-    fn parse_jump_points(jump_points: &mut Vec<JumpPoint>, to_parse: &str) {
-        // TODO actual parsing
-        //for line in to_parse.lines() {
-            //
-        //}
-    }
-
     let stdin_channel: Receiver<u8> = {
         let (tx, rx) = channel::<u8>();
         thread::spawn(move || {
@@ -166,9 +199,11 @@ fn do_server() -> Result<(), ServerError> {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream.read_to_string(&mut buffer)?;
-                println!("Client said: {buffer}");
+                //println!("Client said: {buffer}");
 
-                parse_jump_points(&mut jump_points, &buffer);
+                jump_points::parse(&mut jump_points, &buffer);
+
+                println!("{jump_points:?}");
 
                 buffer.clear();
             },
