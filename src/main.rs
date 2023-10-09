@@ -3,7 +3,7 @@ use std::{
     io::{self, ErrorKind, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
-    process::{ExitCode, Termination},
+    process::{Command, ExitCode, Termination},
     sync::mpsc::{channel, Receiver, TryRecvError},
     thread,
 };
@@ -276,8 +276,10 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         let jump_point_opt = jump_points.get(index);
 
         if let Some(jump_point) = jump_point_opt {
+            println!("----vvvv----");
             println!("{}", jump_point.message);
             println!("{}", jump_point.path.display());
+            println!("----^^^^----");
         }
 
         for i in index + 1..jump_points.len() {
@@ -288,20 +290,27 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
 
         match stdin_channel.try_recv() {
             Ok(SPACE) => match jump_point_opt {
-                Some(_jp) => println!("TODO implement jumping"),
+                Some(jump_point) => {
+
+                    match Command::new("e")
+                        .args([&jump_point.path])
+                        .output() {
+                        Ok(output) => {
+                            println!("{}", output.status.success());
+                            println!("{:?}", std::str::from_utf8(&output.stdout));
+                            println!("{:?}", std::str::from_utf8(&output.stderr));
+                        }
+                        Err(e) => {
+                            println!("{e}");
+                        }
+                    }
+                },
                 None => println!("No jump point found"),
             },
             Ok(key) => println!("Received: {}", key),
             Err(TryRecvError::Empty) => {},
             Err(e) => Err(TryRecv(e))?,
         }
-
-        // TODO accept input and display UI
-        // UI:
-        //     List of jump points
-        //         Space to trigger current selection and move to next
-        //         Arrows to move along list
-        //     Some way to view the raw input?
 
         // TODO calculate amount to sleep based on how long things took
         thread::sleep(std::time::Duration::from_millis(16));
