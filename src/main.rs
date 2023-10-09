@@ -8,6 +8,44 @@ use std::{
     thread,
 };
 
+mod printer {
+    #[derive(Default)]
+    pub struct Printer {
+        enable_alt: &'static str,
+        disable_alt: &'static str,
+        clear: &'static str,
+        move_home: &'static str,
+    }
+
+    impl Printer {
+        pub fn ansi() -> Self {
+            Self {
+                enable_alt: "\u{001b}[?1049h",
+                disable_alt: "\u{001b}[?1049l",
+                clear: "\u{001b}[2J",
+                move_home: "\u{001b}[H",
+            }
+        }
+
+        pub fn enable_alternate_screen(&self) {
+            print!("{}", self.enable_alt);
+        }
+
+        pub fn disable_alternate_screen(&self) {
+            print!("{}", self.disable_alt);
+        }
+
+        pub fn clear(&self) {
+            print!("{}", self.clear);
+        }
+
+        pub fn move_home(&self) {
+            print!("{}", self.move_home);
+        }
+    }
+}
+use printer::Printer;
+
 mod jump_points {
     use super::*;
     use tinyjson::JsonValue;
@@ -15,6 +53,7 @@ mod jump_points {
     #[derive(Debug)]
     pub struct JumpPoint {
         pub path: PathBuf,
+        pub message: String,
     }
 
     pub fn parse(jump_points: &mut Vec<JumpPoint>, to_parse: &str) {
@@ -25,6 +64,13 @@ mod jump_points {
             match line.parse::<JsonValue>() {
                 Ok(Object(object)) => {
                     let Some(Object(message)) = object.get("message") else { continue };
+
+                    let rendered_message = object.get("rendered")
+                        .and_then(|r| match r {
+                            String(s) => Some(s),
+                            _ => None,
+                        });
+
                     let Some(Array(children)) = message.get("children") else { continue };
 
                     for child_value in children {
@@ -41,6 +87,7 @@ mod jump_points {
                             let _ = write!(path, ":{line_number}");
                             jump_points.push(JumpPoint {
                                 path: PathBuf::from(path),
+                                message: rendered_message.cloned().unwrap_or_default(),
                             });
                         }
                     }
@@ -129,6 +176,16 @@ impl From<io::Error> for ServerError {
 }
 
 fn do_server() -> Result<(), ServerError> {
+    let p = Printer::ansi();
+
+    p.enable_alternate_screen();
+    let output = do_server_inner(&p);
+    p.disable_alternate_screen();
+
+    output
+}
+
+fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     use ServerError::*;
 
     let socket = PathBuf::from(SOCKET_PATH);
@@ -195,6 +252,9 @@ fn do_server() -> Result<(), ServerError> {
     };
 
     loop {
+        p.clear();
+        p.move_home();
+
         // Iterate over clients, blocks if no client available
         match listener.accept() {
             Ok((mut stream, _)) => {
@@ -203,18 +263,31 @@ fn do_server() -> Result<(), ServerError> {
 
                 jump_points::parse(&mut jump_points, &buffer);
 
-                println!("{jump_points:?}");
-
                 buffer.clear();
             },
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => println!("accept function failed: {e:?}"),
         }
 
+        for i in 0..index {
+            println!("{}", jump_points[i].path.display());
+        }
+
+        let jump_point_opt = jump_points.get(index);
+
+        if let Some(jump_point) = jump_point_opt {
+            println!("{}", jump_point.message);
+            println!("{}", jump_point.path.display());
+        }
+
+        for i in index + 1..jump_points.len() {
+            println!("{}", jump_points[i].path.display());
+        }
+
         const SPACE: u8 = 32;
 
         match stdin_channel.try_recv() {
-            Ok(SPACE) => match jump_points.get(index) {
+            Ok(SPACE) => match jump_point_opt {
                 Some(_jp) => println!("TODO implement jumping"),
                 None => println!("No jump point found"),
             },
