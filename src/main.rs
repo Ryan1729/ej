@@ -65,7 +65,7 @@ mod jump_points {
                 Ok(Object(object)) => {
                     let Some(Object(message)) = object.get("message") else { continue };
 
-                    let rendered_message = object.get("rendered")
+                    let rendered_message = message.get("rendered")
                         .and_then(|r| match r {
                             String(s) => Some(s),
                             _ => None,
@@ -307,7 +307,6 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream.read_to_string(&mut buffer)?;
-                //println!("Client said: {buffer}");
 
                 jump_points::parse(&mut jump_points, &buffer);
 
