@@ -238,14 +238,62 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     let mut jump_points = Vec::with_capacity(16);
     let mut index = 0;
 
-    let stdin_channel: Receiver<u8> = {
-        let (tx, rx) = channel::<u8>();
+    #[derive(Copy, Clone)]
+    enum Input {
+        Byte(u8),
+        Up,
+        Down,
+        Right,
+        Left,
+    }
+
+    impl core::fmt::Display for Input {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            use Input::*;
+            match self {
+                Byte(b) => write!(f, "Byte({b})"),
+                Up => write!(f, "Up"),
+                Down => write!(f, "Down"),
+                Right => write!(f, "Right"),
+                Left => write!(f, "Left"),
+            }
+        }
+    }
+
+    let stdin_channel: Receiver<Input> = {
+        let (tx, rx) = channel::<Input>();
         thread::spawn(move || {
+            use Input::*;
+            macro_rules! send {
+                ($input: expr) => {
+                    tx.send($input).unwrap()
+                }
+            }
+    
             let mut stdin = io::stdin();
-            let mut buffer = [0; 1];
+            let mut byte_buffer = [0; 1];
             loop {
-                stdin.read_exact(&mut buffer).unwrap();
-                tx.send(buffer[0]).unwrap();
+                stdin.read_exact(&mut byte_buffer).unwrap();
+                let byte = byte_buffer[0];
+                match byte {
+                    // ANSI escape
+                    0x1B => {
+                        let mut escape_buffer = [0; 2];
+                        stdin.read_exact(&mut escape_buffer).unwrap();
+                        match escape_buffer {
+                            [91, 65] => send!(Up),
+                            [91, 66] => send!(Down),
+                            [91, 67] => send!(Right),
+                            [91, 68] => send!(Left),
+                            _ => {
+                                send!(Byte(byte));
+                                send!(Byte(escape_buffer[0]));
+                                send!(Byte(escape_buffer[1]));
+                            },
+                        }
+                    }
+                    _ => { send!(Byte(byte)); }
+                }
             }
         });
         rx
@@ -289,9 +337,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         const SPACE: u8 = 32;
 
         match stdin_channel.try_recv() {
-            Ok(SPACE) => match jump_point_opt {
+            Ok(Input::Byte(SPACE)) => match jump_point_opt {
                 Some(jump_point) => {
-
                     match Command::new("e")
                         .args([&jump_point.path])
                         .output() {
@@ -306,6 +353,16 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                     }
                 },
                 None => println!("No jump point found"),
+            },
+            Ok(Input::Up) => {
+                index = index.saturating_sub(1);
+            },
+            Ok(Input::Down) => {
+                index += 1;
+                let len = jump_points.len();
+                if index >= len {
+                    index = len - 1;
+                }
             },
             Ok(key) => println!("Received: {}", key),
             Err(TryRecvError::Empty) => {},
