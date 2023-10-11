@@ -50,7 +50,9 @@ mod jump_points {
     use super::*;
     use tinyjson::JsonValue;
 
-    #[derive(Debug)]
+    // TODO sort line numbers properly instead of lexicographically.
+    // (97 < 400 for example)
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub struct JumpPoint {
         pub path: PathBuf,
         pub message: String,
@@ -59,6 +61,8 @@ mod jump_points {
     pub fn parse(jump_points: &mut Vec<JumpPoint>, to_parse: &str) {
         use std::fmt::Write;
         use JsonValue::*;
+
+        jump_points.clear();
 
         for line in to_parse.lines() {
             match line.parse::<JsonValue>() {
@@ -71,30 +75,41 @@ mod jump_points {
                             _ => None,
                         });
 
+                    macro_rules! process_spans {
+                        ($root: expr) => {
+                            if let Some(Array(spans)) = $root.get("spans") {
+                                for span_value in spans {
+                                    let Object(span) = span_value else { continue };
+                
+                                    let Some(String(ref path)) = span.get("file_name") else { continue };
+                                    let Some(Number(line_number)) = span.get("line_start") else { continue };
+                
+                                    let mut path = path.clone();
+                                    let _ = write!(path, ":{line_number}");
+                                    jump_points.push(JumpPoint {
+                                        path: PathBuf::from(path),
+                                        message: rendered_message.cloned().unwrap_or_default(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    process_spans!(message);
+
                     let Some(Array(children)) = message.get("children") else { continue };
 
                     for child_value in children {
                         let Object(child) = child_value else { continue };
-                        let Some(Array(spans)) = child.get("spans") else { continue };
-
-                        for span_value in spans {
-                            let Object(span) = span_value else { continue };
-
-                            let Some(String(ref path)) = span.get("file_name") else { continue };
-                            let Some(Number(line_number)) = span.get("line_start") else { continue };
-
-                            let mut path = path.clone();
-                            let _ = write!(path, ":{line_number}");
-                            jump_points.push(JumpPoint {
-                                path: PathBuf::from(path),
-                                message: rendered_message.cloned().unwrap_or_default(),
-                            });
-                        }
+                        process_spans!(child);
                     }
                 },
                 _ => {}
             }
         }
+
+        jump_points.sort();
+        jump_points.dedup();
     }
 }
 use jump_points::JumpPoint;
