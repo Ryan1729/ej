@@ -332,7 +332,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         }
 
         for i in 0..index {
-            println!("{}", jump_points[i].path.display());
+            let Some(jump_point) = jump_points.get(i) else { break };
+            println!("{}", jump_point.path.display());
         }
 
         let jump_point_opt = jump_points.get(index);
@@ -345,7 +346,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         }
 
         for i in index + 1..jump_points.len() {
-            println!("{}", jump_points[i].path.display());
+            let Some(jump_point) = jump_points.get(i) else { break };
+            println!("{}", jump_point.path.display());
         }
 
         const SPACE: u8 = 32;
