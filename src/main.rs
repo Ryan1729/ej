@@ -1,3 +1,5 @@
+#![deny(unreachable_patterns)]
+
 use std::{
     fs::{self},
     io::{self, ErrorKind, Read, Write},
@@ -252,6 +254,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     let mut buffer = String::with_capacity(1024);
     let mut jump_points = Vec::with_capacity(16);
     let mut index = 0;
+    let mut scroll_skip_lines: usize = 0;
 
     #[derive(Copy, Clone)]
     enum Input {
@@ -260,6 +263,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         Down,
         Right,
         Left,
+        ScrollUp,
+        ScrollDown,
     }
 
     impl core::fmt::Display for Input {
@@ -271,6 +276,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 Down => write!(f, "Down"),
                 Right => write!(f, "Right"),
                 Left => write!(f, "Left"),
+                ScrollUp => write!(f, "ScrollUp"),
+                ScrollDown => write!(f, "ScrollDown"),
             }
         }
     }
@@ -300,6 +307,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                             [91, 66] => send!(Down),
                             [91, 67] => send!(Right),
                             [91, 68] => send!(Left),
+                            [79, 65] => send!(ScrollUp),
+                            [79, 66] => send!(ScrollDown),
                             _ => {
                                 send!(Byte(byte));
                                 send!(Byte(escape_buffer[0]));
@@ -314,9 +323,34 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         rx
     };
 
+    // TODO get from terminal
+    let row_count = 32;
+
     loop {
         p.clear();
         p.move_home();
+
+        let mut lines_count = 0;
+        // wrap println and count lines and only actually print lines after
+        // count exceededs scroll_skip_lines value.
+        macro_rules! pln {
+            ($($format_args: tt)+) => {{
+                let string = format!($($format_args)+);
+
+                // If there's a single line with no newlines add none.
+                for line in string.lines().skip(1) {
+                    lines_count += 1;
+                }
+
+                // For ln in println!
+                lines_count += 1;
+
+                if lines_count > scroll_skip_lines 
+                && lines_count < scroll_skip_lines + row_count {
+                    println!("{string}");
+                }
+            }}
+        }
 
         // Iterate over clients, blocks if no client available
         match listener.accept() {
@@ -328,26 +362,31 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 buffer.clear();
             },
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-            Err(e) => println!("accept function failed: {e:?}"),
+            Err(e) => pln!("accept function failed: {e:?}"),
+        }
+
+        // This can happen when the stream changes the length of `jump_points`.
+        if index > jump_points.len() {
+            index = jump_points.len().saturating_sub(1);
         }
 
         for i in 0..index {
             let Some(jump_point) = jump_points.get(i) else { break };
-            println!("{}", jump_point.path.display());
+            pln!("{}", jump_point.path.display());
         }
 
-        let jump_point_opt = jump_points.get(index);
-
+        let mut jump_point_opt = None;
+        jump_point_opt = jump_points.get(index);
         if let Some(jump_point) = jump_point_opt {
-            println!("----vvvv----");
-            println!("{}", jump_point.message);
-            println!("{}", jump_point.path.display());
-            println!("----^^^^----");
+            pln!("----vvvv----");
+            pln!("{}", jump_point.message);
+            pln!("{}", jump_point.path.display());
+            pln!("----^^^^----");
         }
 
         for i in index + 1..jump_points.len() {
             let Some(jump_point) = jump_points.get(i) else { break };
-            println!("{}", jump_point.path.display());
+            pln!("{}", jump_point.path.display());
         }
 
         const SPACE: u8 = 32;
@@ -359,16 +398,16 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                         .args([&jump_point.path])
                         .output() {
                         Ok(output) => {
-                            println!("{}", output.status.success());
-                            println!("{:?}", std::str::from_utf8(&output.stdout));
-                            println!("{:?}", std::str::from_utf8(&output.stderr));
+                            pln!("{}", output.status.success());
+                            pln!("{:?}", std::str::from_utf8(&output.stdout));
+                            pln!("{:?}", std::str::from_utf8(&output.stderr));
                         }
                         Err(e) => {
-                            println!("{e}");
+                            pln!("{e}");
                         }
                     }
                 },
-                None => println!("No jump point found"),
+                None => pln!("No jump point found"),
             },
             Ok(Input::Up) => {
                 index = index.saturating_sub(1);
@@ -377,13 +416,25 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 index += 1;
                 let len = jump_points.len();
                 if index >= len {
-                    index = len - 1;
+                    index = len.saturating_sub(1);
                 }
             },
-            Ok(key) => println!("Received: {}", key),
+            Ok(Input::ScrollUp) => {
+                scroll_skip_lines = scroll_skip_lines.saturating_sub(1);
+            },
+            Ok(Input::ScrollDown) => {
+                scroll_skip_lines += 1;
+                let len = jump_points.len();
+                if scroll_skip_lines >= len {
+                    scroll_skip_lines = len.saturating_sub(1);
+                }
+            },
+            Ok(key) => pln!("Received: {}", key),
             Err(TryRecvError::Empty) => {},
             Err(e) => Err(TryRecv(e))?,
         }
+
+        pln!("index: {index}, scroll_skip_lines: {scroll_skip_lines}");
 
         // TODO calculate amount to sleep based on how long things took
         thread::sleep(std::time::Duration::from_millis(16));
