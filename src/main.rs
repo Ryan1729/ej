@@ -324,7 +324,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     };
 
     // TODO get from terminal
-    let row_count = 32;
+    let row_count = 36;
 
     loop {
         p.clear();
@@ -337,17 +337,15 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
             ($($format_args: tt)+) => {{
                 let string = format!($($format_args)+);
 
-                // If there's a single line with no newlines add none.
-                for line in string.lines().skip(1) {
+                let one_past_max = scroll_skip_lines + row_count;
+
+                for line in string.lines() {
+                    if lines_count > scroll_skip_lines 
+                    && lines_count < one_past_max {
+                        println!("{line}");
+                    }
+
                     lines_count += 1;
-                }
-
-                // For ln in println!
-                lines_count += 1;
-
-                if lines_count > scroll_skip_lines 
-                && lines_count < scroll_skip_lines + row_count {
-                    println!("{string}");
                 }
             }}
         }
