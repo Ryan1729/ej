@@ -265,6 +265,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         Left,
         ScrollUp,
         ScrollDown,
+        End,
+        Home,
     }
 
     impl core::fmt::Display for Input {
@@ -278,6 +280,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 Left => write!(f, "Left"),
                 ScrollUp => write!(f, "ScrollUp"),
                 ScrollDown => write!(f, "ScrollDown"),
+                End => write!(f, "End"),
+                Home => write!(f, "Home"),
             }
         }
     }
@@ -307,6 +311,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                             [91, 66] => send!(Down),
                             [91, 67] => send!(Right),
                             [91, 68] => send!(Left),
+                            [91, 70] => send!(End),
+                            [91, 72] => send!(Home),
                             [79, 65] => send!(ScrollUp),
                             [79, 66] => send!(ScrollDown),
                             _ => {
@@ -426,6 +432,15 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 if scroll_skip_lines >= len {
                     scroll_skip_lines = len.saturating_sub(1);
                 }
+            },
+            Ok(Input::End) => {
+                let last_index = jump_points.len().saturating_sub(1);
+                index = last_index;
+                scroll_skip_lines = last_index;
+            },
+            Ok(Input::Home) => {
+                index = 0;
+                scroll_skip_lines = 0;
             },
             Ok(key) => pln!("Received: {}", key),
             Err(TryRecvError::Empty) => {},
