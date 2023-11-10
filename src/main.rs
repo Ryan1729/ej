@@ -56,6 +56,8 @@ mod jump_points {
     // (97 < 400 for example)
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub struct JumpPoint {
+        // As of this writing, this only affects the sort/deduping
+        pub uninformative_number: bool,
         pub path: PathBuf,
         pub message: String,
     }
@@ -82,15 +84,17 @@ mod jump_points {
                             if let Some(Array(spans)) = $root.get("spans") {
                                 for span_value in spans {
                                     let Object(span) = span_value else { continue };
-                
+
                                     let Some(String(ref path)) = span.get("file_name") else { continue };
                                     let Some(Number(line_number)) = span.get("line_start") else { continue };
-                
+
                                     let mut path = path.clone();
                                     let _ = write!(path, ":{line_number}");
                                     jump_points.push(JumpPoint {
                                         path: PathBuf::from(path),
                                         message: rendered_message.cloned().unwrap_or_default(),
+                                        // We want NaN to map to true.
+                                        uninformative_number: !(*line_number > 1.),
                                     });
                                 }
                             }
@@ -112,6 +116,32 @@ mod jump_points {
 
         jump_points.sort();
         jump_points.dedup();
+    }
+
+    #[test]
+    fn parse_handles_line_1_entries_properly() {
+        // We get some line 1 entries that are duplicated later with a more
+        // informative line number. We don't want to see those at the top
+        // of the list.
+        // TODO check for entries where another has the same message and
+        // if the line number is uninformative on less than all of a given
+        // one of a given group with te same message, remove those entries
+        // with uninformative line numbers.
+
+        let to_parse = r#"
+{"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 1}]}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+"#;
+
+        let EXPECTED_COUNT: usize = 2;
+
+        let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
+
+        parse(&mut jump_points, to_parse);
+
+        assert_eq!(jump_points.len(), EXPECTED_COUNT);
+        assert!(jump_points[1].uninformative_number);
+        assert!(!jump_points[0].uninformative_number);
     }
 }
 use jump_points::JumpPoint;
@@ -295,7 +325,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                     tx.send($input).unwrap()
                 }
             }
-    
+
             let mut stdin = io::stdin();
             let mut byte_buffer = [0; 1];
             loop {
@@ -346,7 +376,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 let one_past_max = scroll_skip_lines + row_count;
 
                 for line in string.lines() {
-                    if lines_count > scroll_skip_lines 
+                    if lines_count > scroll_skip_lines
                     && lines_count < one_past_max {
                         println!("{line}");
                     }
