@@ -58,6 +58,8 @@ mod jump_points {
     pub struct JumpPoint {
         // As of this writing, this only affects the sort/deduping
         pub uninformative_number: bool,
+        // As of this writing, this only affects the sort/deduping
+        pub external_lib: bool,
         pub path: PathBuf,
         pub message: String,
     }
@@ -88,6 +90,8 @@ mod jump_points {
                                     let Some(String(ref path)) = span.get("file_name") else { continue };
                                     let Some(Number(line_number)) = span.get("line_start") else { continue };
 
+                                    let external_lib = path.contains("rustup");
+
                                     let mut path = path.clone();
                                     let _ = write!(path, ":{line_number}");
                                     jump_points.push(JumpPoint {
@@ -95,6 +99,7 @@ mod jump_points {
                                         message: rendered_message.cloned().unwrap_or_default(),
                                         // We want NaN to map to true.
                                         uninformative_number: !(*line_number > 1.),
+                                        external_lib,
                                     });
                                 }
                             }
@@ -125,7 +130,7 @@ mod jump_points {
         // of the list.
         // TODO check for entries where another has the same message and
         // if the line number is uninformative on less than all of a given
-        // one of a given group with te same message, remove those entries
+        // one of a given group with the same message, remove those entries
         // with uninformative line numbers.
 
         let to_parse = r#"
@@ -142,6 +147,33 @@ mod jump_points {
         assert_eq!(jump_points.len(), EXPECTED_COUNT);
         assert!(jump_points[1].uninformative_number);
         assert!(!jump_points[0].uninformative_number);
+    }
+
+    #[test]
+    fn parse_handles_rustup_entries_properly() {
+        // We get some entries that point to, for example the rust std library,
+        // locally on disk. We don't want those to be at the top of the list.
+        // The place they appear on disk in a usual installation on linux, ends
+        // up being in the ~/.rustup folder. Hopefully the Windows equivalent
+        // contains the string rustup too.
+        // TODO confirm that for Windows, etc.
+
+        let to_parse = r#"
+{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+"#;
+
+        let EXPECTED_COUNT: usize = 2;
+
+        let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
+
+        parse(&mut jump_points, to_parse);
+
+        assert_eq!(jump_points.len(), EXPECTED_COUNT);
+        assert!(jump_points[1].external_lib);
+        assert!(jump_points[1].path.to_string_lossy().contains("rustup"));
+        assert!(!jump_points[0].external_lib);
+        assert!(!jump_points[0].path.to_string_lossy().contains("rustup"));
     }
 }
 use jump_points::JumpPoint;
