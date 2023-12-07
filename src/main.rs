@@ -394,6 +394,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     // TODO get from terminal
     let row_count = 36;
 
+    let mut unhandled_keys = [None; 8];
+
     loop {
         p.clear();
         p.move_home();
@@ -408,7 +410,9 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 let one_past_max = scroll_skip_lines + row_count;
 
                 for line in string.lines() {
-                    if lines_count > scroll_skip_lines
+                    // Think of the scroll_skip_lines values as being
+                    // between the lines
+                    if lines_count >= scroll_skip_lines
                     && lines_count < one_past_max {
                         println!("{line}");
                     }
@@ -454,6 +458,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
             let Some(jump_point) = jump_points.get(i) else { break };
             pln!("{}", jump_point.path.display());
         }
+
+        let mut skip_clearing_unhandled = false;
 
         const SPACE: u8 = 32;
 
@@ -504,12 +510,49 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 index = 0;
                 scroll_skip_lines = 0;
             },
-            Ok(key) => pln!("Received: {}", key),
-            Err(TryRecvError::Empty) => {},
+            Ok(key) => {
+                skip_clearing_unhandled = true;
+
+                let free_index = unhandled_keys
+                    .iter()
+                    .position(|e| e.is_none());
+                match free_index {
+                    Some(index) => {
+                        unhandled_keys[index] = Some(key);
+                    }
+                    None => {
+                        unhandled_keys.rotate_left(1);
+                        unhandled_keys[
+                            unhandled_keys.len() - 1
+                        ] = Some(key);
+                    }
+                }
+            },
+            Err(TryRecvError::Empty) => {
+                skip_clearing_unhandled = true;
+            },
             Err(e) => Err(TryRecv(e))?,
         }
 
         pln!("index: {index}, scroll_skip_lines: {scroll_skip_lines}");
+
+        if !skip_clearing_unhandled {
+            unhandled_keys = <_>::default();
+        }
+
+        if unhandled_keys.iter().any(|e| e.is_some()) {
+            pln!(
+                "Received: {}{}{}{}{}{}{}{}",
+                if let Some(key) = unhandled_keys[0] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[1] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[2] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[3] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[4] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[5] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[6] { format!("{key}") } else { "".to_string() },
+                if let Some(key) = unhandled_keys[7] { format!("{key}") } else { "".to_string() },
+            );
+        }
 
         // TODO calculate amount to sleep based on how long things took
         thread::sleep(std::time::Duration::from_millis(16));
