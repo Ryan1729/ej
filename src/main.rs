@@ -313,7 +313,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
 
     println!("Server started, waiting for clients");
 
-    let mut buffer = String::with_capacity(1024);
+    let mut listener_buffer = String::with_capacity(1024);
     let mut jump_points = Vec::with_capacity(16);
     let mut index = 0;
     let mut scroll_skip_lines: usize = 0;
@@ -329,6 +329,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         ScrollDown,
         End,
         Home,
+        DebugDumpToFile,
     }
 
     impl core::fmt::Display for Input {
@@ -344,6 +345,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 ScrollDown => write!(f, "ScrollDown"),
                 End => write!(f, "End"),
                 Home => write!(f, "Home"),
+                DebugDumpToFile => write!(f, "DebugDumpToFile"),
             }
         }
     }
@@ -364,6 +366,8 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 stdin.read_exact(&mut byte_buffer).unwrap();
                 let byte = byte_buffer[0];
                 match byte {
+                    // Device Control Two. Often sent with Ctrl-r
+                    0x12 => { send!(DebugDumpToFile); },
                     // ANSI escape
                     0x1B => {
                         let mut escape_buffer = [0; 2];
@@ -383,7 +387,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                                 send!(Byte(escape_buffer[1]));
                             },
                         }
-                    }
+                    },
                     _ => { send!(Byte(byte)); }
                 }
             }
@@ -425,11 +429,11 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         // Iterate over clients, blocks if no client available
         match listener.accept() {
             Ok((mut stream, _)) => {
-                stream.read_to_string(&mut buffer)?;
+                stream.read_to_string(&mut listener_buffer)?;
 
-                jump_points::parse(&mut jump_points, &buffer);
+                jump_points::parse(&mut jump_points, &listener_buffer);
 
-                buffer.clear();
+                listener_buffer.clear();
             },
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => pln!("accept function failed: {e:?}"),
@@ -509,6 +513,35 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
             Ok(Input::Home) => {
                 index = 0;
                 scroll_skip_lines = 0;
+            },
+            Ok(Input::DebugDumpToFile) => {
+                use std::time::SystemTime;
+
+                let path = PathBuf::from(
+                    format!(
+                        "/tmp/ej-debug-dump-{}",
+                        match SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                        {
+                            Ok(n) => format!("{}", n.as_nanos()),
+                            Err(_) => "before-unix-epoch-somehow".to_string(),
+                        }
+                    )
+                );
+
+                let result = std::fs::write(
+                    &path,
+                    format!("{jump_points:#?}").as_bytes(),
+                );
+                // TODO make these message last on screen longer
+                match result {
+                    Ok(_) => {
+                        pln!("Wrote to {}", path.display());
+                    }
+                    Err(e) => {
+                        pln!("When debug dumping: {e}");
+                    }
+                }
             },
             Ok(key) => {
                 skip_clearing_unhandled = true;
