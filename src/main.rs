@@ -52,6 +52,30 @@ mod jump_points {
     use super::*;
     use tinyjson::JsonValue;
 
+    // 64k error messages ought to be enough for anybody!
+    pub type DuplicateIndex = u16;
+    pub type DuplicateIndexesLen = u8;
+
+    #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct DuplicateIndexes {
+        len: DuplicateIndexesLen,
+        // 7 so this structure takes a round number of bytes, and because we
+        // don't expect to need even that many in practice.
+        indexes: [DuplicateIndex; 7],
+    }
+
+    impl DuplicateIndexes {
+        pub fn push(&mut self, index: DuplicateIndex) {
+            let free_index = usize::from(self.len);
+            if free_index >= self.indexes.len() {
+                debug_assert!(false, "Ran out of space in DuplicateIndex::push!");
+                return
+            }
+            self.indexes[free_index] = index;
+            self.len += 1;
+        }
+    }
+
     // TODO sort line numbers properly instead of lexicographically.
     // (97 < 400 for example)
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,6 +86,7 @@ mod jump_points {
         pub external_lib: bool,
         pub path: PathBuf,
         pub message: String,
+        pub duplicate_indexes: DuplicateIndexes,
     }
 
     pub fn parse(jump_points: &mut Vec<JumpPoint>, to_parse: &str) {
@@ -100,6 +125,7 @@ mod jump_points {
                                         // We want NaN to map to true.
                                         uninformative_number: !(*line_number > 1.),
                                         external_lib,
+                                        duplicate_indexes: <_>::default(),
                                     });
                                 }
                             }
@@ -174,6 +200,46 @@ mod jump_points {
         assert!(jump_points[1].path.to_string_lossy().contains("rustup"));
         assert!(!jump_points[0].external_lib);
         assert!(!jump_points[0].path.to_string_lossy().contains("rustup"));
+    }
+
+    #[test]
+    fn parse_collects_duplicate_indexes_on_this_example() {
+        let to_parse = r#"
+{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}, "children": {"spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+"#;
+
+        let EXPECTED_COUNT: usize = 3;
+
+        let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
+
+        parse(&mut jump_points, to_parse);
+
+        macro_rules! dup_ind {
+            ($array: expr) => ({
+                let mut output = DuplicateIndexes::default();
+
+                for el in $array {
+                    output.push(el);
+                }
+
+                output
+            })
+        }
+
+        assert_eq!(jump_points.len(), EXPECTED_COUNT);
+        assert_eq!(
+            jump_points[0].duplicate_indexes,
+            dup_ind!([1, 2]),
+        );
+        assert_eq!(
+            jump_points[1].duplicate_indexes,
+            dup_ind!([0, 2]),
+        );
+        assert_eq!(
+            jump_points[2].duplicate_indexes,
+            dup_ind!([0, 1]),
+        );
     }
 }
 use jump_points::JumpPoint;
