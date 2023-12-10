@@ -106,8 +106,11 @@ mod jump_points {
                             _ => None,
                         });
 
+                    let start_len = jump_points.len();
+
                     macro_rules! process_spans {
                         ($root: expr) => {
+
                             if let Some(Array(spans)) = $root.get("spans") {
                                 for span_value in spans {
                                     let Object(span) = span_value else { continue };
@@ -140,6 +143,29 @@ mod jump_points {
                         let Object(child) = child_value else { continue };
                         process_spans!(child);
                     }
+
+                    let end_len = jump_points.len();
+                    assert!(start_len <= end_len);
+                    if let Ok(end_len) = jump_points.len().try_into() {
+                        let start_len = start_len.try_into().unwrap();
+dbg!(start_len, end_len);
+                        // If at least two were pushed
+                        if start_len + 1 < end_len {
+                            // At least one was pushed, and it would have gotten
+                            // that index.
+                            let start_index = start_len;
+
+                            for point_i in start_index..end_len {
+                                let point: &mut JumpPoint =
+                                    &mut jump_points[usize::from(point_i)];
+
+                                for pushed_i in start_index..end_len {
+                                    if pushed_i == point_i { continue }
+                                    point.duplicate_indexes.push(pushed_i);
+                                }
+                            }
+                        }
+                    }
                 },
                 _ => {}
             }
@@ -164,7 +190,7 @@ mod jump_points {
 {"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
 "#;
 
-        let EXPECTED_COUNT: usize = 2;
+        const EXPECTED_COUNT: usize = 2;
 
         let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
 
@@ -189,7 +215,7 @@ mod jump_points {
 {"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
 "#;
 
-        let EXPECTED_COUNT: usize = 2;
+        const EXPECTED_COUNT: usize = 2;
 
         let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
 
@@ -203,13 +229,27 @@ mod jump_points {
     }
 
     #[test]
-    fn parse_collects_duplicate_indexes_on_this_example() {
+    fn parse_collects_all_spans_on_this_children_example() {
         let to_parse = r#"
-{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}, "children": {"spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}], "children": [{"spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}]}}
 {"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
 "#;
 
-        let EXPECTED_COUNT: usize = 3;
+        const EXPECTED_COUNT: usize = 3;
+
+        let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
+
+        parse(&mut jump_points, to_parse);
+        assert_eq!(jump_points.len(), EXPECTED_COUNT);
+    }
+
+    #[test]
+    fn parse_collects_duplicate_indexes_on_this_example() {
+        let to_parse = r#"
+{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}], "children": [{"spans": [{"file_name": "rustup/example.rs", "line_start": 123}, {"file_name": "rustup/example_2.rs", "line_start": 456}]}]}}
+"#;
+
+        const EXPECTED_COUNT: usize = 3;
 
         let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
 
@@ -228,13 +268,14 @@ mod jump_points {
         }
 
         assert_eq!(jump_points.len(), EXPECTED_COUNT);
+        // Recall that the jump_points get sorted!
         assert_eq!(
             jump_points[0].duplicate_indexes,
-            dup_ind!([1, 2]),
+            dup_ind!([0, 2]),
         );
         assert_eq!(
             jump_points[1].duplicate_indexes,
-            dup_ind!([0, 2]),
+            dup_ind!([1, 2]),
         );
         assert_eq!(
             jump_points[2].duplicate_indexes,
