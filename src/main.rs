@@ -48,6 +48,42 @@ mod printer {
 }
 use printer::Printer;
 
+fn setup_terminal() -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let tty;
+    let fd = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+        libc::STDIN_FILENO
+    } else {
+        tty = fs::File::open("/dev/tty")?;
+
+        tty.as_raw_fd()
+    };
+
+    let mut ptr = core::mem::MaybeUninit::uninit();
+
+    if unsafe { libc::tcgetattr(fd, ptr.as_mut_ptr()) } == 0 {
+        let mut termios = unsafe { ptr.assume_init() };
+        let c_oflag = termios.c_oflag;
+
+        unsafe { libc::cfmakeraw(&mut termios); }
+        termios.c_oflag = c_oflag;
+        // Enable signal handling again after cfmakeraw disabled it
+        termios.c_lflag |= libc::ISIG;
+
+        if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &termios) } == 0 {
+            return Ok(());
+        }
+    }
+
+    Err(io::Error::last_os_error())
+}
+
+fn get_row_count() -> usize {
+    // TODO get from terminal
+    36
+}
+
 mod jump_points {
     use super::*;
     use tinyjson::JsonValue;
@@ -148,7 +184,7 @@ mod jump_points {
                     assert!(start_len <= end_len);
                     if let Ok(end_len) = jump_points.len().try_into() {
                         let start_len = start_len.try_into().unwrap();
-dbg!(start_len, end_len);
+
                         // If at least two were pushed
                         if start_len + 1 < end_len {
                             // At least one was pushed, and it would have gotten
@@ -385,37 +421,6 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     let listener = UnixListener::bind(&socket)?;
     listener.set_nonblocking(true)?;
 
-    fn setup_terminal() -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-
-        let tty;
-        let fd = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
-            libc::STDIN_FILENO
-        } else {
-            tty = fs::File::open("/dev/tty")?;
-
-            tty.as_raw_fd()
-        };
-
-        let mut ptr = core::mem::MaybeUninit::uninit();
-
-        if unsafe { libc::tcgetattr(fd, ptr.as_mut_ptr()) } == 0 {
-            let mut termios = unsafe { ptr.assume_init() };
-            let c_oflag = termios.c_oflag;
-
-            unsafe { libc::cfmakeraw(&mut termios); }
-            termios.c_oflag = c_oflag;
-            // Enable signal handling again after cfmakeraw disabled it
-            termios.c_lflag |= libc::ISIG;
-
-            if unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &termios) } == 0 {
-                return Ok(());
-            }
-        }
-
-        Err(io::Error::last_os_error())
-    }
-
     setup_terminal()?;
 
     println!("Server started, waiting for clients");
@@ -502,8 +507,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         rx
     };
 
-    // TODO get from terminal
-    let row_count = 36;
+    let row_count = get_row_count();
 
     let mut unhandled_keys = [None; 8];
 
@@ -742,10 +746,14 @@ fn res_main() -> Res<()> {
     args.next(); //exe name
 
     let mut is_client = false;
+    let mut socket_debug = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--client" => {
                 is_client = true;
+            }
+            "--socket-debug" => {
+                socket_debug = true;
             }
             _ => {
                 return Err(format!("Unrecognized arg: {arg}").into());
@@ -753,9 +761,89 @@ fn res_main() -> Res<()> {
         }
     }
 
-    if is_client {
-        do_client().map_err(From::from)
+    if socket_debug {
+        if is_client {
+            do_socket_debug_client().map_err(From::from)
+        } else {
+            do_socket_debug_server().map_err(From::from)
+        }
     } else {
-        do_server().map_err(From::from)
+        if is_client {
+            do_client().map_err(From::from)
+        } else {
+            do_server().map_err(From::from)
+        }
     }
+}
+
+// TODO? Make this configurable?
+const SOCKET_DEBUG_PATH: &str = SOCKET_PATH;
+
+fn do_socket_debug_client() -> Result<(), ClientError> {
+    let socket = PathBuf::from(SOCKET_DEBUG_PATH);
+
+    let mut stream = UnixStream::connect(&socket)?;
+
+    let mut pipe_buffer = Vec::with_capacity(1024);
+    io::stdin().read_to_end(&mut pipe_buffer)?;
+
+    stream.write(&pipe_buffer).map(|_| ()).map_err(From::from)
+}
+
+fn do_socket_debug_server() -> Result<(), ServerError> {
+    let p = Printer::ansi();
+
+    p.enable_alternate_screen();
+    let output = do_socket_debug_server_inner(&p);
+    p.disable_alternate_screen();
+
+    output
+}
+
+fn do_socket_debug_server_inner(p: &Printer) -> Result<(), ServerError> {
+    use ServerError::*;
+
+    let socket = PathBuf::from(SOCKET_DEBUG_PATH);
+
+    // Delete old socket if necessary
+    if socket.exists() {
+        println!("Deleting old socket");
+        fs::remove_file(&socket)?;
+    }
+
+    let listener = UnixListener::bind(&socket)?;
+    listener.set_nonblocking(true)?;
+
+    setup_terminal()?;
+
+    println!("Server started, waiting for clients");
+
+    let mut listener_buffer = String::with_capacity(1024);
+
+    let row_count = get_row_count();
+
+    loop {
+        // Iterate over clients, blocks if no client available
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                p.clear();
+                p.move_home();
+
+                stream.read_to_string(&mut listener_buffer)?;
+
+                for line in listener_buffer.lines() {
+                    println!("{line}");
+                }
+
+                listener_buffer.clear();
+            },
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) => println!("accept function failed: {e:?}"),
+        }
+
+        // TODO calculate amount to sleep based on how long things took
+        thread::sleep(std::time::Duration::from_millis(16));
+    }
+
+    Ok(())
 }
