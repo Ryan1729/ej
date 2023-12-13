@@ -110,6 +110,10 @@ mod jump_points {
             self.indexes[free_index] = index;
             self.len += 1;
         }
+
+        pub fn len(&self) -> DuplicateIndexesLen {
+            self.len
+        }
     }
 
     // TODO sort line numbers properly instead of lexicographically.
@@ -566,6 +570,10 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
             pln!("----vvvv----");
             pln!("{}", jump_point.message);
             pln!("{}", jump_point.path.display());
+            let len = jump_point.duplicate_indexes.len();
+            if len > 0 {
+                pln!("{len} duplicate(s)");
+            }
             pln!("----^^^^----");
         }
 
