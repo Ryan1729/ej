@@ -1,6 +1,7 @@
 #![deny(unreachable_patterns)]
 
 use std::{
+    collections::{HashSet},
     fs::{self},
     io::{self, ErrorKind, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
@@ -84,6 +85,48 @@ fn get_row_count() -> usize {
     36
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Digit {
+    Zero,
+    One,
+    Two,
+    Three,
+    Four,
+    Five,
+    Six,
+    Seven,
+    Eight,
+    Nine,
+}
+
+impl Digit {
+    pub fn u8(self) -> u8 {
+        use Digit::*;
+        match self {
+            Zero => 0,
+            One => 1,
+            Two => 2,
+            Three => 3,
+            Four => 4,
+            Five => 5,
+            Six => 6,
+            Seven => 7,
+            Eight => 8,
+            Nine => 9,
+        }
+    }
+
+    pub fn usize(self) -> usize {
+        usize::from(self.u8())
+    }
+}
+
+impl core::fmt::Display for Digit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.u8())
+    }
+}
+
 mod jump_points {
     use super::*;
     use tinyjson::JsonValue;
@@ -95,9 +138,10 @@ mod jump_points {
     #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
     pub struct DuplicateIndexes {
         len: DuplicateIndexesLen,
-        // 7 so this structure takes a round number of bytes, and because we
+        own_index: DuplicateIndex,
+        // 6 so this structure takes a round number of bytes, and because we
         // don't expect to need even that many in practice.
-        indexes: [DuplicateIndex; 7],
+        indexes: [DuplicateIndex; 6],
     }
 
     impl DuplicateIndexes {
@@ -113,6 +157,23 @@ mod jump_points {
 
         pub fn len(&self) -> DuplicateIndexesLen {
             self.len
+        }
+
+        pub fn own_index(&self) -> DuplicateIndex{
+            self.own_index
+        }
+
+        pub fn as_slice(&self) -> &[DuplicateIndex] {
+            &self.indexes[..usize::from(self.len)]
+        }
+
+        pub fn get_1_based(&self, index: Digit) -> Option<DuplicateIndex> {
+            if index == Digit::Zero {
+                return None
+            }
+            self.as_slice()
+                .get(index.usize() - 1)
+                .copied()
         }
     }
 
@@ -183,29 +244,6 @@ mod jump_points {
                         let Object(child) = child_value else { continue };
                         process_spans!(child);
                     }
-
-                    let end_len = jump_points.len();
-                    assert!(start_len <= end_len);
-                    if let Ok(end_len) = jump_points.len().try_into() {
-                        let start_len = start_len.try_into().unwrap();
-
-                        // If at least two were pushed
-                        if start_len + 1 < end_len {
-                            // At least one was pushed, and it would have gotten
-                            // that index.
-                            let start_index = start_len;
-
-                            for point_i in start_index..end_len {
-                                let point: &mut JumpPoint =
-                                    &mut jump_points[usize::from(point_i)];
-
-                                for pushed_i in start_index..end_len {
-                                    if pushed_i == point_i { continue }
-                                    point.duplicate_indexes.push(pushed_i);
-                                }
-                            }
-                        }
-                    }
                 },
                 _ => {}
             }
@@ -213,6 +251,62 @@ mod jump_points {
 
         jump_points.sort();
         jump_points.dedup();
+
+        // Setting the duplicate indexes being O(N^2) isn't great, but I
+        // don't see another way to pass the duplicate_indexes tests.
+
+        let Ok(len) = DuplicateIndex::try_from(jump_points.len()) else {
+            // If we do have more errors than fits inside a DuplicateIndex
+            // gracefully degrading to just not tracking the duplicates seems
+            // preferable to not displaying the jump points at all.
+            return
+        };
+        let mut duplicated_indexes =
+            // Usually there won't even be any duplicates. Could track the
+            // max chain of duplicates in the spans collection loop I guess?
+            // But we will use at least one to store the root in each loop.
+            Vec::with_capacity(1);
+        // This is used to avoid pushing the same duplicate indexes onto a
+        // jump point more than once.
+        let mut previous_duplicate_indexes = HashSet::with_capacity(usize::from(len));
+        for root_i in 0..len {
+            if previous_duplicate_indexes.contains(&root_i) {
+                continue
+            }
+
+            duplicated_indexes.clear();
+            {
+                // TODO slice::split after root_i to avoid clone
+                //let message = &jump_points[usize::from(root_i)].message;
+                let message = jump_points[usize::from(root_i)].message.clone();
+
+                duplicated_indexes.push(root_i);
+
+                for check_i in (root_i + 1)..len {
+                    if jump_points[usize::from(check_i)].message == message {
+                        duplicated_indexes.push(check_i);
+                        previous_duplicate_indexes.insert(check_i);
+                    }
+                }
+            }
+
+            if duplicated_indexes.len() > 1 {
+                let mut own_index = 0;
+
+                for &point_i in &duplicated_indexes {
+                    let point: &mut JumpPoint =
+                        &mut jump_points[usize::from(point_i)];
+
+                    for &pushed_i in &duplicated_indexes {
+                        point.duplicate_indexes.push(pushed_i);
+                    }
+
+                    point.duplicate_indexes.own_index = own_index;
+
+                    own_index += 1;
+                }
+            }
+        }
     }
 
     #[test]
@@ -269,9 +363,25 @@ mod jump_points {
     }
 
     #[test]
+    fn parse_collects_all_spans_on_this_no_children_example() {
+        let to_parse = r#"
+{"message": {"rendered": "msg A", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+{"message": {"rendered": "msg B", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+{"message": {"rendered": "msg C", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+"#;
+
+        const EXPECTED_COUNT: usize = 3;
+
+        let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
+
+        parse(&mut jump_points, to_parse);
+        assert_eq!(jump_points.len(), EXPECTED_COUNT, "{jump_points:?}");
+    }
+
+    #[test]
     fn parse_collects_all_spans_on_this_children_example() {
         let to_parse = r#"
-{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}], "children": [{"spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}]}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}], "children": [{"spans": [{"file_name": "rustup/example_2.rs", "line_start": 123}]}]}}
 {"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
 "#;
 
@@ -280,24 +390,27 @@ mod jump_points {
         let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
 
         parse(&mut jump_points, to_parse);
-        assert_eq!(jump_points.len(), EXPECTED_COUNT);
+        assert_eq!(jump_points.len(), EXPECTED_COUNT, "{jump_points:?}");
     }
 
     #[test]
     fn parse_collects_duplicate_indexes_on_this_example() {
         let to_parse = r#"
-{"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}], "children": [{"spans": [{"file_name": "rustup/example.rs", "line_start": 123}, {"file_name": "rustup/example_2.rs", "line_start": 456}]}]}}
+{"message": {"rendered": "different_msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}], "children": [{"spans": [{"file_name": "rustup/example.rs", "line_start": 123}, {"file_name": "rustup/example_2.rs", "line_start": 456}]}]}}
 "#;
 
-        const EXPECTED_COUNT: usize = 3;
+        const EXPECTED_COUNT: usize = 4;
 
         let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
 
         parse(&mut jump_points, to_parse);
 
         macro_rules! dup_ind {
-            ($array: expr) => ({
+            ($array: expr, $own_index: literal) => ({
                 let mut output = DuplicateIndexes::default();
+
+                output.own_index = $own_index;
 
                 for el in $array {
                     output.push(el);
@@ -308,18 +421,24 @@ mod jump_points {
         }
 
         assert_eq!(jump_points.len(), EXPECTED_COUNT);
-        // Recall that the jump_points get sorted!
         assert_eq!(
-            jump_points[0].duplicate_indexes,
-            dup_ind!([0, 2]),
+            jump_points[0].duplicate_indexes.len(),
+            0
         );
+        // Recall that the jump_points get sorted. Note though that we want
+        // the own indexes, (which should be relative to the indexes array)
+        // to be in ascending order in the final list.
         assert_eq!(
             jump_points[1].duplicate_indexes,
-            dup_ind!([1, 2]),
+            dup_ind!([1, 2, 3], 0),
         );
         assert_eq!(
             jump_points[2].duplicate_indexes,
-            dup_ind!([0, 1]),
+            dup_ind!([1, 2, 3], 1),
+        );
+        assert_eq!(
+            jump_points[3].duplicate_indexes,
+            dup_ind!([1, 2, 3], 2),
         );
     }
 }
@@ -446,6 +565,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         End,
         Home,
         DebugDumpToFile,
+        DigitKey(Digit)
     }
 
     impl core::fmt::Display for Input {
@@ -462,6 +582,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                 End => write!(f, "End"),
                 Home => write!(f, "Home"),
                 DebugDumpToFile => write!(f, "DebugDumpToFile"),
+                DigitKey(digit) => write!(f, "DigitKey({digit})"),
             }
         }
     }
@@ -469,6 +590,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
     let stdin_channel: Receiver<Input> = {
         let (tx, rx) = channel::<Input>();
         thread::spawn(move || {
+            use Digit::*;
             use Input::*;
             macro_rules! send {
                 ($input: expr) => {
@@ -504,6 +626,17 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                             },
                         }
                     },
+                    // ASCII 0 - 9
+                    0x30 => { send!(DigitKey(Zero)); },
+                    0x31 => { send!(DigitKey(One)); },
+                    0x32 => { send!(DigitKey(Two)); },
+                    0x33 => { send!(DigitKey(Three)); },
+                    0x34 => { send!(DigitKey(Four)); },
+                    0x35 => { send!(DigitKey(Five)); },
+                    0x36 => { send!(DigitKey(Six)); },
+                    0x37 => { send!(DigitKey(Seven)); },
+                    0x38 => { send!(DigitKey(Eight)); },
+                    0x39 => { send!(DigitKey(Nine)); },
                     _ => { send!(Byte(byte)); }
                 }
             }
@@ -570,9 +703,27 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
             pln!("----vvvv----");
             pln!("{}", jump_point.message);
             pln!("{}", jump_point.path.display());
-            let len = jump_point.duplicate_indexes.len();
+            let duplicates = jump_point.duplicate_indexes.as_slice();
+            let len = duplicates.len();
             if len > 0 {
-                pln!("{len} duplicate(s)");
+                let own_index = usize::from(
+                    jump_point.duplicate_indexes.own_index()
+                );
+                // 4 for "[N] ", minus 1 for not outputting a trailing spce
+                let mut s = String::with_capacity((len * 4) - 1);
+                let mut sep = "";
+                for zero_based_index in 0..len {
+                    use std::fmt::Write;
+
+                    if zero_based_index == own_index {
+                        continue
+                    }
+
+                    let one_based_index = zero_based_index + 1;
+                    write!(&mut s, "{sep}[{one_based_index}]");
+                    sep = " ";
+                }
+                pln!("{s}");
             }
             pln!("----^^^^----");
         }
@@ -662,6 +813,21 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                     }
                 }
             },
+            Ok(Input::DigitKey(digit)) => match jump_point_opt {
+                Some(jump_point) => {
+                    match jump_point
+                        .duplicate_indexes
+                        .get_1_based(digit) {
+                        Some(duplicate_index) => {
+                            let duplicate_index = usize::from(duplicate_index);
+                            index = duplicate_index;
+                            scroll_skip_lines = duplicate_index;
+                        },
+                        None => pln!("No duplicate for {digit}"),
+                    }
+                },
+                None => pln!("No jump point found for digit jump"),
+            },
             Ok(key) => {
                 skip_clearing_unhandled = true;
 
@@ -709,8 +875,6 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         // TODO calculate amount to sleep based on how long things took
         thread::sleep(std::time::Duration::from_millis(16));
     }
-
-    Ok(())
 }
 
 struct Terminator(Res<()>);
@@ -852,6 +1016,4 @@ fn do_socket_debug_server_inner(p: &Printer) -> Result<(), ServerError> {
         // TODO calculate amount to sleep based on how long things took
         thread::sleep(std::time::Duration::from_millis(16));
     }
-
-    Ok(())
 }
