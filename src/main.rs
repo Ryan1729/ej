@@ -155,6 +155,7 @@ mod jump_points {
             self.len += 1;
         }
 
+        #[cfg(test)]
         pub fn len(&self) -> DuplicateIndexesLen {
             self.len
         }
@@ -206,8 +207,6 @@ mod jump_points {
                             String(s) => Some(s),
                             _ => None,
                         });
-
-                    let start_len = jump_points.len();
 
                     macro_rules! process_spans {
                         ($root: expr) => {
@@ -442,7 +441,6 @@ mod jump_points {
         );
     }
 }
-use jump_points::JumpPoint;
 
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
 
@@ -697,8 +695,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
             pln!("{}", jump_point.path.display());
         }
 
-        let mut jump_point_opt = None;
-        jump_point_opt = jump_points.get(index);
+        let jump_point_opt = jump_points.get(index);
         if let Some(jump_point) = jump_point_opt {
             pln!("----vvvv----");
             pln!("{}", jump_point.message);
@@ -720,7 +717,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                     }
 
                     let one_based_index = zero_based_index + 1;
-                    write!(&mut s, "{sep}[{one_based_index}]");
+                    let _ = write!(&mut s, "{sep}[{one_based_index}]");
                     sep = " ";
                 }
                 pln!("{s}");
@@ -882,7 +879,7 @@ struct Terminator(Res<()>);
 impl Termination for Terminator {
     fn report(self) -> ExitCode {
         match self.0 {
-            Ok(val) => ExitCode::SUCCESS,
+            Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 use std::fmt::Write;
                 let mut buffer = String::with_capacity(256);
@@ -973,8 +970,6 @@ fn do_socket_debug_server() -> Result<(), ServerError> {
 }
 
 fn do_socket_debug_server_inner(p: &Printer) -> Result<(), ServerError> {
-    use ServerError::*;
-
     let socket = PathBuf::from(SOCKET_DEBUG_PATH);
 
     // Delete old socket if necessary
@@ -991,8 +986,6 @@ fn do_socket_debug_server_inner(p: &Printer) -> Result<(), ServerError> {
     println!("Server started, waiting for clients");
 
     let mut listener_buffer = String::with_capacity(1024);
-
-    let row_count = get_row_count();
 
     loop {
         // Iterate over clients, blocks if no client available
