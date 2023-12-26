@@ -646,6 +646,9 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
 
     let mut unhandled_keys = [None; 8];
 
+    let mut fade_message = String::with_capacity(1024);
+    let mut fade_counter: u16 = 0;
+
     loop {
         p.clear();
         p.move_home();
@@ -654,7 +657,7 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         // wrap println and count lines and only actually print lines after
         // count exceededs scroll_skip_lines value.
         macro_rules! pln {
-            ($($format_args: tt)+) => {{
+            ($($format_args: tt)+) => ({
                 let string = format!($($format_args)+);
 
                 let one_past_max = scroll_skip_lines + row_count;
@@ -669,7 +672,23 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
 
                     lines_count += 1;
                 }
-            }}
+            })
+        }
+
+        // Like println but write to the fading message instead.
+        // Resets the fade counter, ensuring the message is shown
+        // for a while.
+        macro_rules! fade_println {
+            ($($format_args: tt)+) => ({
+                use std::fmt::Write;
+                // If we use this macro on multiple lines in sequence,
+                // things will work fine, so we don't want a warning.
+                {
+                    #![allow(unused_assignments)]
+                    fade_counter = 300;
+                }
+                let _ = writeln!(&mut fade_message, $($format_args)+);
+            })
         }
 
         // Iterate over clients, blocks if no client available
@@ -741,16 +760,22 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                         .args([&jump_point.path])
                         .output() {
                         Ok(output) => {
-                            pln!("{}", output.status.success());
-                            pln!("{:?}", std::str::from_utf8(&output.stdout));
-                            pln!("{:?}", std::str::from_utf8(&output.stderr));
+                            fade_println!("{}", output.status.success());
+                            match std::str::from_utf8(&output.stdout) {
+                                Ok(s) => { fade_println!("{s}"); }
+                                Err(err) => { fade_println!("Error: {err}"); }
+                            }
+                            match std::str::from_utf8(&output.stderr) {
+                                Ok(s) => { fade_println!("{s}"); }
+                                Err(err) => { fade_println!("Error: {err}"); }
+                            }
                         }
                         Err(e) => {
-                            pln!("{e}");
+                            fade_println!("{e}");
                         }
                     }
                 },
-                None => pln!("No jump point found"),
+                None => fade_println!("No jump point found"),
             },
             Ok(Input::Up) => {
                 index = index.saturating_sub(1);
@@ -800,13 +825,13 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                     &path,
                     format!("{jump_points:#?}").as_bytes(),
                 );
-                // TODO make these message last on screen longer
+
                 match result {
                     Ok(_) => {
-                        pln!("Wrote to {}", path.display());
+                        fade_println!("Wrote to {}", path.display());
                     }
                     Err(e) => {
-                        pln!("When debug dumping: {e}");
+                        fade_println!("When debug dumping: {e}");
                     }
                 }
             },
@@ -820,10 +845,10 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
                             index = duplicate_index;
                             scroll_skip_lines = duplicate_index;
                         },
-                        None => pln!("No duplicate for {digit}"),
+                        None => fade_println!("No duplicate for {digit}"),
                     }
                 },
-                None => pln!("No jump point found for digit jump"),
+                None => fade_println!("No jump point found for digit jump"),
             },
             Ok(key) => {
                 skip_clearing_unhandled = true;
@@ -850,6 +875,15 @@ fn do_server_inner(p: &Printer) -> Result<(), ServerError> {
         }
 
         pln!("index: {index}, scroll_skip_lines: {scroll_skip_lines}");
+
+        if !fade_message.is_empty() {
+            pln!("{fade_message}");
+        }
+
+        fade_counter = fade_counter.saturating_sub(1);
+        if fade_counter == 0 {
+            fade_message.clear();
+        }
 
         if !skip_clearing_unhandled {
             unhandled_keys = <_>::default();
