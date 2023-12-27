@@ -218,7 +218,13 @@ mod jump_points {
                                     let Some(String(ref path)) = span.get("file_name") else { continue };
                                     let Some(Number(line_number)) = span.get("line_start") else { continue };
 
-                                    let external_lib = path.contains("rustup");
+                                    let mut external_lib = false;
+                                    for needle in ["rustup", "rustc", ".cargo"] {
+                                        external_lib = path.contains(needle);
+                                        if external_lib {
+                                            break;
+                                        }
+                                    }
 
                                     let mut path = path.clone();
                                     let _ = write!(path, ":{line_number}");
@@ -335,7 +341,7 @@ mod jump_points {
     }
 
     #[test]
-    fn parse_handles_rustup_entries_properly() {
+    fn parse_handles_external_entries_properly() {
         // We get some entries that point to, for example the rust std library,
         // locally on disk. We don't want those to be at the top of the list.
         // The place they appear on disk in a usual installation on linux, ends
@@ -344,21 +350,29 @@ mod jump_points {
         // TODO confirm that for Windows, etc.
 
         let to_parse = r#"
+{"message": {"rendered": "msg", "spans": [{"file_name": ".cargo/example.rs", "line_start": 123}]}}
+{"message": {"rendered": "msg", "spans": [{"file_name": "rustc/example.rs", "line_start": 123}]}}
 {"message": {"rendered": "msg", "spans": [{"file_name": "rustup/example.rs", "line_start": 123}]}}
 {"message": {"rendered": "msg", "spans": [{"file_name": "example.rs", "line_start": 123}]}}
 "#;
 
-        const EXPECTED_COUNT: usize = 2;
+        const EXPECTED_COUNT: usize = 4;
 
         let mut jump_points = Vec::with_capacity(EXPECTED_COUNT);
 
         parse(&mut jump_points, to_parse);
 
         assert_eq!(jump_points.len(), EXPECTED_COUNT);
-        assert!(jump_points[1].external_lib);
-        assert!(jump_points[1].path.to_string_lossy().contains("rustup"));
+        assert!(jump_points[1].external_lib, "{jump_points:?}");
+        assert!(jump_points[1].path.to_string_lossy().contains(".cargo"));
+        assert!(jump_points[2].external_lib);
+        assert!(jump_points[2].path.to_string_lossy().contains("rustc"));
+        assert!(jump_points[3].external_lib);
+        assert!(jump_points[3].path.to_string_lossy().contains("rustup"));
         assert!(!jump_points[0].external_lib);
         assert!(!jump_points[0].path.to_string_lossy().contains("rustup"));
+        assert!(!jump_points[0].path.to_string_lossy().contains(".cargo"));
+        assert!(!jump_points[0].path.to_string_lossy().contains("rustc"));
     }
 
     #[test]
